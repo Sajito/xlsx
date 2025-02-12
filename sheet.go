@@ -593,106 +593,6 @@ func (s *Sheet) prepSheetForMarshalling(maxLevelCol uint8) {
 	s.SheetFormat.OutlineLevelCol = maxLevelCol
 }
 
-func (s *Sheet) prepWorksheetFromRows(worksheet *xlsxWorksheet, relations *xlsxWorksheetRels) error {
-	s.mustBeOpen()
-	var maxCell, maxRow int
-
-	prepRow := func(row *Row) error {
-		if row.num > maxRow {
-			maxRow = row.num
-		}
-
-		prepCell := func(cell *Cell) error {
-			if cell.num > maxCell {
-				maxCell = cell.num
-			}
-			cellID := GetCellIDStringFromCoords(cell.num, row.num)
-			if nil != cell.DataValidation {
-				if nil == worksheet.DataValidations {
-					worksheet.DataValidations = &xlsxDataValidations{}
-				}
-				cell.DataValidation.Sqref = cellID
-				worksheet.DataValidations.DataValidation = append(worksheet.DataValidations.DataValidation, cell.DataValidation)
-				worksheet.DataValidations.Count = len(worksheet.DataValidations.DataValidation)
-			}
-
-			if cell.Hyperlink != (Hyperlink{}) {
-				if worksheet.Hyperlinks == nil {
-					worksheet.Hyperlinks = &xlsxHyperlinks{HyperLinks: []xlsxHyperlink{}}
-				}
-
-				if cell.Hyperlink.Location != "" {
-					xlsxLink := xlsxHyperlink{
-						Reference:     cellID,
-						Location:      cell.Hyperlink.Location,
-						DisplayString: cell.Hyperlink.DisplayString,
-						Tooltip:       cell.Hyperlink.Tooltip}
-					worksheet.Hyperlinks.HyperLinks = append(worksheet.Hyperlinks.HyperLinks, xlsxLink)
-				} else {
-					var relId string
-					if relations != nil && relations.Relationships != nil {
-						for _, rel := range relations.Relationships {
-							if rel.Target == cell.Hyperlink.Link {
-								relId = rel.Id
-							}
-						}
-					}
-
-					if relId != "" {
-
-						xlsxLink := xlsxHyperlink{
-							RelationshipId: relId,
-							Reference:      cellID,
-							DisplayString:  cell.Hyperlink.DisplayString,
-							Tooltip:        cell.Hyperlink.Tooltip}
-						worksheet.Hyperlinks.HyperLinks = append(worksheet.Hyperlinks.HyperLinks, xlsxLink)
-					}
-				}
-
-			}
-
-			if cell.HMerge > 0 || cell.VMerge > 0 {
-				mc := xlsxMergeCell{}
-				start := fmt.Sprintf("%s%d", ColIndexToLetters(cell.num), row.num+1)
-				endcol := cell.num + cell.HMerge
-				endrow := row.num + cell.VMerge + 1
-				end := fmt.Sprintf("%s%d", ColIndexToLetters(endcol), endrow)
-				mc.Ref = start + ":" + end
-				if worksheet.MergeCells == nil {
-					worksheet.MergeCells = &xlsxMergeCells{}
-				}
-				worksheet.MergeCells.Cells = append(worksheet.MergeCells.Cells, mc)
-				worksheet.MergeCells.addCell(mc)
-			}
-			return nil
-		}
-
-		return row.ForEachCell(prepCell, SkipEmptyCells)
-	}
-
-	err := s.ForEachRow(prepRow, SkipEmptyRows)
-	if err != nil {
-		return err
-	}
-	worksheet.SheetFormatPr.OutlineLevelCol = s.SheetFormat.OutlineLevelCol
-	worksheet.SheetFormatPr.OutlineLevelRow = s.SheetFormat.OutlineLevelRow
-	if worksheet.MergeCells != nil {
-		worksheet.MergeCells.Count = len(worksheet.MergeCells.Cells)
-	}
-
-	if s.AutoFilter != nil {
-		worksheet.AutoFilter = &xlsxAutoFilter{Ref: fmt.Sprintf("%v:%v", s.AutoFilter.TopLeftCell, s.AutoFilter.BottomRightCell)}
-	}
-
-	dimension := xlsxDimension{}
-	dimension.Ref = "A1:" + GetCellIDStringFromCoords(maxCell, maxRow)
-	if dimension.Ref == "A1:A1" {
-		dimension.Ref = "A1"
-	}
-	worksheet.Dimension = dimension
-	return nil
-}
-
 func (s *Sheet) makeRows(worksheet *xlsxWorksheet, styles *xlsxStyleSheet, refTable *RefTable, relations *xlsxWorksheetRels, maxLevelCol uint8) error {
 	s.mustBeOpen()
 	maxRow := 0
@@ -894,7 +794,7 @@ func (s *Sheet) MarshalSheet(w io.Writer, refTable *RefTable, styles *xlsxStyleS
 	maxLevelCol := s.makeCols(worksheet, styles)
 	s.makeDataValidations(worksheet)
 	s.prepSheetForMarshalling(maxLevelCol)
-	err := s.prepWorksheetFromRows(worksheet, relations)
+	err := s.makeRows(worksheet, styles, refTable, relations, maxLevelCol)
 	if err != nil {
 		return err
 	}

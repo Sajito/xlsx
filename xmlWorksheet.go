@@ -49,10 +49,10 @@ type xlsxWorksheet struct {
 	SheetFormatPr   xlsxSheetFormatPr    `xml:"sheetFormatPr"`
 	Cols            *xlsxCols            `xml:"cols,omitempty"`
 	SheetData       xlsxSheetData        `xml:"sheetData"`
-	Hyperlinks      *xlsxHyperlinks      `xml:"hyperlinks,omitempty"`
-	DataValidations *xlsxDataValidations `xml:"dataValidations"`
 	AutoFilter      *xlsxAutoFilter      `xml:"autoFilter,omitempty"`
 	MergeCells      *xlsxMergeCells      `xml:"mergeCells,omitempty"`
+	DataValidations *xlsxDataValidations `xml:"dataValidations"`
+	Hyperlinks      *xlsxHyperlinks      `xml:"hyperlinks,omitempty"`
 	PrintOptions    *xlsxPrintOptions    `xml:"printOptions,omitempty"`
 	PageMargins     *xlsxPageMargins     `xml:"pageMargins,omitempty"`
 	PageSetUp       *xlsxPageSetUp       `xml:"pageSetup,omitempty"`
@@ -591,17 +591,12 @@ func emitStructAsXML(v reflect.Value, name, xmlNS string) (xmlwriter.Elem, error
 		switch ft.Name {
 		case "XMLName":
 			output.Name = name
-			output.Attrs = append(output.Attrs, xmlwriter.Attr{
-				Name:  "xmlns",
-				Value: xmlNS,
-			})
-		case "SheetData", "MergeCells", "DataValidations", "AutoFilter", "Hyperlinks":
-			// Skip SheetData here, we explicitly generate this in writeXML below
-			// Microsoft Excel considers a mergeCells element before a sheetData element to be
-			// an error and will fail to open the document, so we'll be back with this data
-			// from writeXml later.
-
-			continue
+			if xmlNS != "" {
+				output.Attrs = append(output.Attrs, xmlwriter.Attr{
+					Name:  "xmlns",
+					Value: xmlNS,
+				})
+			}
 		default:
 			if fv.Kind() == reflect.Ptr {
 				if fv.IsNil() {
@@ -735,64 +730,6 @@ func (worksheet *xlsxWorksheet) WriteXML(xw *xmlwriter.Writer, s *Sheet, styles 
 	defer ec.Set(&err)
 	ec.Do(
 		xw.StartElem(output),
-		xw.StartElem(xmlwriter.Elem{Name: "sheetData"}),
-		s.ForEachRow(func(row *Row) error {
-			xRow, err := worksheet.makeXlsxRowFromRow(row, styles, refTable)
-			if err != nil {
-				return err
-			}
-			elem := reflect.ValueOf(xRow)
-			output, err := emitStructAsXML(elem, "row", "")
-			if err != nil {
-				return err
-			}
-			err = xw.Write(output)
-			if err != nil {
-				return err
-			}
-			return xw.Flush()
-
-		}, SkipEmptyRows),
-		xw.EndElem("sheetData"),
-		func() error {
-			if worksheet.AutoFilter != nil {
-				autoFilter, err := emitStructAsXML(reflect.ValueOf(worksheet.AutoFilter), "autoFilter", "")
-				if err != nil {
-					return err
-				}
-				if err := xw.Write(autoFilter); err != nil {
-					return err
-				}
-			}
-			if worksheet.MergeCells != nil {
-				mergeCells, err := emitStructAsXML(reflect.ValueOf(worksheet.MergeCells), "mergeCells", "")
-				if err != nil {
-					return err
-				}
-				if err := xw.Write(mergeCells); err != nil {
-					return err
-				}
-			}
-			if worksheet.DataValidations != nil {
-				dataValidation, err := emitStructAsXML(reflect.ValueOf(worksheet.DataValidations), "dataValidations", "")
-				if err != nil {
-					return err
-				}
-				if err := xw.Write(dataValidation); err != nil {
-					return err
-				}
-			}
-			if worksheet.Hyperlinks != nil {
-				hyperlinks, err := emitStructAsXML(reflect.ValueOf(worksheet.Hyperlinks), "hyperlinks", "")
-				if err != nil {
-					return err
-				}
-				if err := xw.Write(hyperlinks); err != nil {
-					return err
-				}
-			}
-			return nil
-		}(),
 		xw.EndElem(output.Name),
 		xw.Flush(),
 	)
