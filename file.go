@@ -6,8 +6,11 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"github.com/peterbourgon/diskv/v3"
 	"io"
+	"mime"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -23,6 +26,9 @@ type File struct {
 	Sheets               []*Sheet
 	Sheet                map[string]*Sheet
 	theme                *theme
+	drawings             map[string]*xlsxDrawing
+	drawingRels          map[string]*xlsxRels
+	mediaFiles           *diskv.Diskv
 	DefinedNames         []*xlsxDefinedName
 	cellStoreConstructor CellStoreConstructor
 	rowLimit             int
@@ -64,6 +70,8 @@ func ValueOnly() FileOption {
 // NewFile creates a new File struct. You may pass it zero, one or
 // many FileOption functions that affect the behaviour of the file.
 func NewFile(options ...FileOption) *File {
+	base, _ := os.MkdirTemp("", "xlsx_media")
+
 	f := &File{
 		Sheet:                make(map[string]*Sheet),
 		Sheets:               make([]*Sheet, 0),
@@ -71,6 +79,9 @@ func NewFile(options ...FileOption) *File {
 		rowLimit:             NoRowLimit,
 		colLimit:             NoColLimit,
 		cellStoreConstructor: NewMemoryCellStore,
+		mediaFiles: diskv.New(diskv.Options{
+			BasePath: base,
+		}),
 	}
 	for _, opt := range options {
 		opt(f)
@@ -239,6 +250,11 @@ func (f *File) AppendSheet(sheet Sheet, sheetName string) (*Sheet, error) {
 	return &sheet, nil
 }
 
+func (f *File) addMediaFile(n string, r io.ReadCloser) error {
+	defer r.Close()
+	return f.mediaFiles.WriteStream(n, r, false)
+}
+
 func (f *File) makeWorkbook() xlsxWorkbook {
 	return xlsxWorkbook{
 		FileVersion: xlsxFileVersion{AppName: "Go XLSX"},
@@ -293,6 +309,11 @@ func addRelationshipNameSpaceToWorksheet(worksheetMarshal string) string {
 	oldHyperlink := `<hyperlink id=`
 	newHyperlink := `<hyperlink r:id=`
 	newSheetMarshall = strings.Replace(newSheetMarshall, oldHyperlink, newHyperlink, -1)
+
+	oldDrawing := `<drawing id=`
+	newDrawing := `<drawing r:id=`
+	newSheetMarshall = strings.Replace(newSheetMarshall, oldDrawing, newDrawing, -1)
+
 	return newSheetMarshall
 }
 
@@ -414,6 +435,48 @@ func (f *File) MakeStreamParts() (map[string]string, error) {
 		}
 
 		sheetIndex++
+	}
+
+	for n, drawing := range f.drawings {
+		drawingPart, err := marshal(drawing)
+		if err != nil {
+			return parts, err
+		}
+		partName := "xl/drawings/" + n + ".xml"
+		parts[partName] = drawingPart
+
+		types.Overrides = append(types.Overrides,
+			xlsxOverride{
+				PartName:    "/" + partName,
+				ContentType: "application/vnd.openxmlformats-officedocument.drawing+xml",
+			})
+	}
+
+	for n, drawingRel := range f.drawingRels {
+		drawingRelPart, err := marshal(drawingRel)
+		if err != nil {
+			return parts, err
+		}
+		partName := "xl/drawings/" + n + ".xml.rels"
+		parts[partName] = drawingRelPart
+	}
+
+	for mediaKey := range f.mediaFiles.Keys(nil) {
+		c, err := f.mediaFiles.Read(mediaKey)
+		if err != nil {
+			return parts, err
+		}
+		partName := "xl/media/" + mediaKey
+		parts[partName] = string(c)
+
+		ext := filepath.Ext(mediaKey)
+		ct := mime.TypeByExtension(ext)
+		if ct != "" {
+			types.Overrides = append(types.Overrides,
+				xlsxOverride{
+					PartName:    "/" + partName,
+					ContentType: ct})
+		}
 	}
 
 	for _, dn := range f.DefinedNames {
@@ -563,6 +626,52 @@ func (f *File) MarshallParts(zipWriter *zip.Writer) error {
 		}
 
 		sheetIndex++
+	}
+
+	for n, drawing := range f.drawings {
+		drawingPart, err := marshal(drawing)
+		if err != nil {
+			return wrap(err)
+		}
+		partName := "xl/drawings/" + n + ".xml"
+		err = writePart(partName, drawingPart)
+		if err != nil {
+			return wrap(err)
+		}
+		types.Overrides = append(types.Overrides,
+			xlsxOverride{
+				PartName:    "/" + partName,
+				ContentType: "application/vnd.openxmlformats-officedocument.drawing+xml",
+			})
+	}
+
+	for n, drawingRel := range f.drawingRels {
+		drawingRelPart, err := marshal(drawingRel)
+		if err != nil {
+			return wrap(err)
+		}
+		partName := "xl/drawings/" + n + ".xml.rels"
+		err = writePart(partName, drawingRelPart)
+		if err != nil {
+			return wrap(err)
+		}
+	}
+
+	for mediaKey := range f.mediaFiles.Keys(nil) {
+		partName := "xl/media/" + mediaKey
+		err = writePart(partName, f.mediaFiles.ReadString(mediaKey))
+		if err != nil {
+			return wrap(err)
+		}
+
+		ext := filepath.Ext(mediaKey)
+		ct := mime.TypeByExtension(ext)
+		if ct != "" {
+			types.Overrides = append(types.Overrides,
+				xlsxOverride{
+					PartName:    "/" + partName,
+					ContentType: ct})
+		}
 	}
 
 	for _, dn := range f.DefinedNames {

@@ -27,6 +27,7 @@ type Sheet struct {
 	AutoFilter      *AutoFilter
 	Relations       []Relation
 	DataValidations []*xlsxDataValidation
+	Drawing         *Drawing
 	cellStore       CellStore
 	currentRow      *Row
 	cellStoreName   string // The first part of the key used in
@@ -98,15 +99,24 @@ type AutoFilter struct {
 }
 
 type Relation struct {
+	Id         uint
 	Type       RelationshipType
 	Target     string
 	TargetMode RelationshipTargetMode
 }
 
+func (r Relation) Equals(o Relation) bool {
+	return r.Type == o.Type && r.Target == o.Target && r.TargetMode == o.TargetMode
+}
+
+type Drawing struct {
+	Id string
+}
+
 func (s *Sheet) makeXLSXSheetRelations() *xlsxWorksheetRels {
 	relSheet := xlsxWorksheetRels{XMLName: xml.Name{Local: "Relationships"}, Relationships: []xlsxWorksheetRelation{}}
-	for id, rel := range s.Relations {
-		xRel := xlsxWorksheetRelation{Id: "rId" + strconv.Itoa(id+1), Type: rel.Type, Target: rel.Target, TargetMode: rel.TargetMode}
+	for _, rel := range s.Relations {
+		xRel := xlsxWorksheetRelation{Id: fmt.Sprintf("rId%d", rel.Id), Type: rel.Type, Target: rel.Target, TargetMode: rel.TargetMode}
 		relSheet.Relationships = append(relSheet.Relationships, xRel)
 	}
 	if len(relSheet.Relationships) == 0 {
@@ -116,9 +126,16 @@ func (s *Sheet) makeXLSXSheetRelations() *xlsxWorksheetRels {
 }
 
 func (s *Sheet) addRelation(relType RelationshipType, target string, targetMode RelationshipTargetMode) {
-	newRel := Relation{Type: relType, Target: target, TargetMode: targetMode}
+	var latestId uint
 	for _, rel := range s.Relations {
-		if rel == newRel {
+		if rel.Id > latestId {
+			latestId = rel.Id
+		}
+	}
+
+	newRel := Relation{Id: latestId + 1, Type: relType, Target: target, TargetMode: targetMode}
+	for _, rel := range s.Relations {
+		if rel.Equals(newRel) {
 			return
 		}
 	}
@@ -785,6 +802,15 @@ func (s *Sheet) makeDataValidations(worksheet *xlsxWorksheet) {
 	}
 }
 
+func (s *Sheet) makeDrawing(worksheet *xlsxWorksheet) {
+	s.mustBeOpen()
+	if s.Drawing != nil {
+		worksheet.Drawing = &xlsxSheetDrawing{
+			Id: s.Drawing.Id,
+		}
+	}
+}
+
 func (s *Sheet) MarshalSheet(w io.Writer, refTable *RefTable, styles *xlsxStyleSheet, relations *xlsxWorksheetRels) error {
 	worksheet := newXlsxWorksheet()
 
@@ -794,6 +820,7 @@ func (s *Sheet) MarshalSheet(w io.Writer, refTable *RefTable, styles *xlsxStyleS
 	maxLevelCol := s.makeCols(worksheet, styles)
 	s.makeDataValidations(worksheet)
 	s.prepSheetForMarshalling(maxLevelCol)
+	s.makeDrawing(worksheet)
 	err := s.makeRows(worksheet, styles, refTable, relations, maxLevelCol)
 	if err != nil {
 		return err
@@ -826,6 +853,7 @@ func (s *Sheet) makeXLSXSheet(refTable *RefTable, styles *xlsxStyleSheet, relati
 	s.makeSheetFormatPr(worksheet)
 	maxLevelCol := s.makeCols(worksheet, styles)
 	s.makeDataValidations(worksheet)
+	s.makeDrawing(worksheet)
 	s.makeRows(worksheet, styles, refTable, relations, maxLevelCol)
 
 	return worksheet

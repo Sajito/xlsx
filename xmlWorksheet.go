@@ -45,6 +45,13 @@ type xlsxWorksheet struct {
 	PageMargins     *xlsxPageMargins     `xml:"pageMargins,omitempty"`
 	PageSetUp       *xlsxPageSetUp       `xml:"pageSetup,omitempty"`
 	HeaderFooter    *xlsxHeaderFooter    `xml:"headerFooter,omitempty"`
+	Drawing         *xlsxSheetDrawing    `xml:"drawing,omitempty"`
+}
+
+// xlsxSheetDrawing maps to the drawing element in the namespace
+// http://schemas.openxmlformats.org/spreadsheetml/2006/main.
+type xlsxSheetDrawing struct {
+	Id string `xml:"id,attr"`
 }
 
 // xlsxHeaderFooter directly maps the headerFooter element in the namespace
@@ -561,7 +568,7 @@ func emitStructAsXML(v reflect.Value, name, xmlNS string) (xmlwriter.Elem, error
 				continue
 			}
 
-			if output.Name == "hyperlink" && name == "id" {
+			if (output.Name == "hyperlink" || output.Name == "drawing") && name == "id" {
 				// Hack to respect the relationship namespace
 				name = "r:id"
 			}

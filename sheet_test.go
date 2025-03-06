@@ -865,3 +865,26 @@ func TestAddEmptyRow(t *testing.T) {
 	t.Logf("cell: %s", cellStr2)
 	c.Assert(cellStr, qt.Equals, cellStr2)
 }
+
+func TestDrawings(t *testing.T) {
+	c := qt.New(t)
+
+	csRunO(c, "LoadAndMarshalWithImages", func(c *qt.C, option FileOption) {
+		f, err := OpenFile("./testdocs/with_images.xlsx", option)
+		c.Assert(err, qt.IsNil)
+		sheet := f.Sheets[0]
+		c.Assert(sheet, qt.IsNotNil)
+		parts, err := f.MakeStreamParts()
+		c.Assert(err, qt.IsNil)
+		c.Assert(parts["xl/worksheets/sheet1.xml"], qt.Contains, `<drawing r:id="rId1"></drawing>`)
+		c.Assert(parts["xl/worksheets/_rels/sheet1.xml.rels"], qt.Contains, `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml">`)
+		c.Assert(parts["xl/drawings/drawing1.xml"], qt.Contains, `embed="rId1"`)
+		c.Assert(parts["xl/drawings/drawing1.xml"], qt.Contains, `embed="rId2"`)
+		c.Assert(parts["xl/drawings/_rels/drawing1.xml.rels"], qt.Contains, `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png">`)
+		c.Assert(parts["xl/drawings/_rels/drawing1.xml.rels"], qt.Contains, `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image2.png">`)
+		c.Assert(parts["xl/media/image1.png"], qt.Not(qt.Equals), "")
+		c.Assert(parts["xl/media/image2.png"], qt.Not(qt.Equals), "")
+		c.Assert(parts["[Content_Types].xml"], qt.Contains, `<Override PartName="/xl/media/image1.png" ContentType="image/png"`)
+		c.Assert(parts["[Content_Types].xml"], qt.Contains, `<Override PartName="/xl/media/image2.png" ContentType="image/png"`)
+	})
+}

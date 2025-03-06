@@ -637,29 +637,52 @@ type coord struct {
 	y int
 }
 
-func makeRelations(fi *File, rsheet *xlsxSheet) (*xlsxRels, error) {
+func readRelsFromZipFile(zipFile *zip.File) (*xlsxRels, error) {
+	var rels *xlsxRels
+	var rc io.ReadCloser
+	var err error
+	var decoder *xml.Decoder
+
+	wrap := func(err error) (*xlsxRels, error) {
+		return nil, fmt.Errorf("readRelsFromZipFile: %w", err)
+	}
+
+	rc, err = zipFile.Open()
+	if err != nil {
+		return wrap(err)
+	}
+
+	decoder = xml.NewDecoder(rc)
+	rels = new(xlsxRels)
+	err = decoder.Decode(rels)
+	if err != nil {
+		return wrap(err)
+	}
+	return rels, nil
+}
+
+func makeRelations(fi *File, rsheet *xlsxSheet, sheetXMLMap map[string]string) (*xlsxRels, error) {
+	var err error
 	rels := new(xlsxRels)
 
 	wrap := func(err error) (*xlsxRels, error) {
 		return nil, fmt.Errorf("makeRelations: %w", err)
 	}
 
-	relsFile, ok := fi.worksheetRels["sheet"+rsheet.SheetId]
-	if ok {
-		rc, err := relsFile.Open()
-		if err != nil {
-			return wrap(fmt.Errorf("file.Open: %w", err))
-		}
-		defer rc.Close()
+	sheetFile, ok := sheetXMLMap[rsheet.Id]
+	if !ok {
+		return rels, err
+	}
 
-		decoder := xml.NewDecoder(rc)
-		err = decoder.Decode(rels)
+	relsFile, ok := fi.worksheetRels[sheetFile]
+	if ok {
+		rels, err = readRelsFromZipFile(relsFile)
 		if err != nil {
-			return wrap(fmt.Errorf("xml.Decoder.Decode: %w", err))
+			return wrap(err)
 		}
 	}
 
-	return rels, nil
+	return rels, err
 }
 
 type hyperlinkTable map[coord]Hyperlink
@@ -738,16 +761,27 @@ func readSheetFromFile(rsheet xlsxSheet, fi *File, sheetXMLMap map[string]string
 		return wrap(err)
 	}
 
-	rels, err := makeRelations(fi, &rsheet)
+	rels, err := makeRelations(fi, &rsheet, sheetXMLMap)
 	if err != nil {
 		return wrap(err)
 	}
 	for _, rel := range rels.Relationships {
-		sheet.Relations = append(sheet.Relations, Relation{
-			Type:       rel.Type,
-			Target:     rel.Target,
-			TargetMode: rel.TargetMode,
-		})
+		var id int
+		if len(rel.Id) > 3 {
+			sId := rel.Id[3:]
+			id, _ = strconv.Atoi(sId)
+		}
+
+		if id > 0 {
+			sheet.Relations = append(sheet.Relations, Relation{
+				Id:         uint(id),
+				Type:       rel.Type,
+				Target:     rel.Target,
+				TargetMode: rel.TargetMode,
+			})
+		} else {
+			sheet.addRelation(rel.Type, rel.Target, rel.TargetMode)
+		}
 	}
 
 	linkTable, err := makeHyperlinkTable(worksheet, rels)
@@ -783,6 +817,10 @@ func readSheetFromFile(rsheet xlsxSheet, fi *File, sheetXMLMap map[string]string
 			sheet.AddDataValidation(dd)
 		}
 
+	}
+
+	if worksheet.Drawing != nil {
+		sheet.Drawing = &Drawing{worksheet.Drawing.Id}
 	}
 
 	return sheet, nil
@@ -1050,6 +1088,52 @@ func readThemeFromZipFile(f *zip.File) (*theme, error) {
 	return newTheme(themeXml), nil
 }
 
+func readDrawingFromZipFile(f *zip.File) (*xlsxDrawing, error) {
+	var drawing *xlsxDrawing
+	var err error
+	var rc io.ReadCloser
+	var decoder *xml.Decoder
+
+	wrap := func(err error) (*xlsxDrawing, error) {
+		return nil, fmt.Errorf("readDrawingFromZipFile: %w", err)
+	}
+
+	drawing = new(xlsxDrawing)
+	rc, err = f.Open()
+	if err != nil {
+		return wrap(fmt.Errorf("file.Open: %w", err))
+	}
+	defer rc.Close()
+
+	decoder = xml.NewDecoder(rc)
+	err = decoder.Decode(drawing)
+	if err != nil {
+		return wrap(fmt.Errorf("xml.Decoder.Decode: %w", err))
+	}
+	return drawing, nil
+}
+
+func readDrawingRelsFromZipFile(f *zip.File, mediaFiles map[string]*zip.File) (*xlsxRels, map[string]*zip.File, error) {
+	wrap := func(err error) (*xlsxRels, map[string]*zip.File, error) {
+		return nil, nil, fmt.Errorf("readDrawingRelsFromZipFile: %w", err)
+	}
+
+	rels, err := readRelsFromZipFile(f)
+	if err != nil {
+		return wrap(err)
+	}
+
+	relFiles := make(map[string]*zip.File, len(rels.Relationships))
+	for _, rel := range rels.Relationships {
+		_, mediaName := filepath.Split(rel.Target)
+		if mediaFile, ok := mediaFiles[mediaName]; ok {
+			relFiles[mediaName] = mediaFile
+		}
+	}
+
+	return rels, relFiles, nil
+}
+
 type WorkBookRels map[string]string
 
 func (w *WorkBookRels) MakeXLSXWorkbookRels() xlsxWorkbookRels {
@@ -1158,6 +1242,9 @@ func ReadZipReader(r *zip.Reader, options ...FileOption) (*File, error) {
 	var workbookRels *zip.File
 	var worksheets map[string]*zip.File
 	var worksheetRels map[string]*zip.File
+	drawings := make(map[string]*zip.File)
+	drawingRels := make(map[string]*zip.File)
+	mediaFiles := make(map[string]*zip.File)
 
 	wrap := func(err error) (*File, error) {
 		return nil, fmt.Errorf("ReadZipReader: %w", err)
@@ -1180,14 +1267,21 @@ func ReadZipReader(r *zip.Reader, options ...FileOption) (*File, error) {
 		case `theme1.xml`:
 			themeFile = v
 		default:
-			if len(v.Name) > 17 {
-				if v.Name[0:13] == "xl/worksheets" || v.Name[0:13] == `xl\worksheets` {
-					if v.Name[len(v.Name)-5:] == ".rels" {
-						worksheetRels[v.Name[20:len(v.Name)-9]] = v
-					} else {
-						worksheets[v.Name[14:len(v.Name)-4]] = v
-					}
+			switch l := len(v.Name); true {
+			case l > 17 && (v.Name[0:13] == "xl/worksheets" || v.Name[0:13] == `xl\worksheets`):
+				if v.Name[l-5:] == ".rels" {
+					worksheetRels[v.Name[20:l-9]] = v
+				} else {
+					worksheets[v.Name[14:l-4]] = v
 				}
+			case l > 19 && (v.Name[:11] == "xl/drawings" || v.Name[:11] == `xl\drawings`):
+				if v.Name[l-5:] == ".rels" {
+					drawingRels[v.Name[12:l-9]] = v
+				} else if v.Name[l-4:] == ".xml" {
+					drawings[v.Name[12:l-4]] = v
+				}
+			case l > 8 && v.Name[:8] == "xl/media":
+				mediaFiles[v.Name[9:]] = v
 			}
 		}
 	}
@@ -1223,6 +1317,38 @@ func ReadZipReader(r *zip.Reader, options ...FileOption) (*File, error) {
 		}
 
 		file.styles = style
+	}
+	if len(drawings) > 0 {
+		file.drawings = make(map[string]*xlsxDrawing, len(drawings))
+		for name, drawing := range drawings {
+			d, err := readDrawingFromZipFile(drawing)
+			if err != nil {
+				return wrap(err)
+			}
+			file.drawings[name] = d
+		}
+	}
+	if len(drawingRels) > 0 {
+		file.drawingRels = make(map[string]*xlsxRels, len(drawingRels))
+		for name, relFile := range drawingRels {
+			_ = name
+			rels, relFiles, err := readDrawingRelsFromZipFile(relFile, mediaFiles)
+			if err != nil {
+				return wrap(err)
+			}
+			file.drawingRels[name] = rels
+
+			for n, relFile := range relFiles {
+				rc, err := relFile.Open()
+				if err != nil {
+					return wrap(err)
+				}
+				err = file.addMediaFile(n, rc)
+				if err != nil {
+					return wrap(err)
+				}
+			}
+		}
 	}
 	sheetsByName, sheets, err = readSheetsFromZipFile(workbook, file, sheetXMLMap, file.rowLimit, file.colLimit, file.valueOnly)
 	if err != nil {

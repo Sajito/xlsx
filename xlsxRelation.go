@@ -4,11 +4,27 @@ import "encoding/xml"
 
 type RelationshipType string
 
+func (r RelationshipType) MarshalXMLAttr(name xml.Name) (xml.Attr, error) {
+	if r == "" {
+		return xml.Attr{}, nil
+	}
+
+	return xml.Attr{Name: name, Value: string(r)}, nil
+}
+
 const (
 	RelationshipTypeHyperlink RelationshipType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 )
 
 type RelationshipTargetMode string
+
+func (r RelationshipTargetMode) MarshalXMLAttr(name xml.Name) (xml.Attr, error) {
+	if r == "" {
+		return xml.Attr{}, nil
+	}
+
+	return xml.Attr{Name: name, Value: string(r)}, nil
+}
 
 const (
 	RelationshipTargetModeExternal RelationshipTargetMode = "External"
