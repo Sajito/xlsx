@@ -1235,6 +1235,10 @@ func readCell(reader *bytes.Reader) (*Cell, error) {
 
 // WriteRow writes a Row to persistant storage.
 func (cs *DiskVCellStore) WriteRow(r *Row) error {
+	if r == nil {
+		return nil
+	}
+
 	dvr, ok := r.cellStoreRow.(*DiskVRow)
 	if !ok {
 		return fmt.Errorf("cellStoreRow for a DiskVCellStore is not DiskVRow (%T)", r.cellStoreRow)
