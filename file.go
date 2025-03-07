@@ -250,6 +250,17 @@ func (f *File) AppendSheet(sheet Sheet, sheetName string) (*Sheet, error) {
 	return &sheet, nil
 }
 
+// Close closes all sheets and own persistent stores. To be used after all writing operations are done,
+// as after closing a file, reading and therefore also writing operations will fail.
+func (f *File) Close() {
+	for _, sheet := range f.Sheets {
+		sheet.Close()
+	}
+
+	_ = os.RemoveAll(f.mediaFiles.BasePath)
+	f.mediaFiles = nil
+}
+
 func (f *File) addMediaFile(n string, r io.ReadCloser) error {
 	defer r.Close()
 	return f.mediaFiles.WriteStream(n, r, false)
